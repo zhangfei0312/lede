@@ -160,6 +160,8 @@ sub mconf_depends {
 		$depend =~ s/^([@\+]+)// and $flags = $1;
 		my $condition = $parent_condition;
 
+		$depend = $2 if	$depend =~ /^(.+):(.+)$/ and $dep->{$1} eq 'select';
+
 		next if $condition eq $depend;
 		next if $seen->{"$parent_condition:$depend"};
 		next if $seen->{":$depend"};
@@ -232,7 +234,7 @@ sub mconf_depends {
 		mconf_depends($pkgname, $tdep->[0], 1, $dep, $seen, $tdep->[1]);
 	}
 
-	foreach my $depend (keys %$dep) {
+	foreach my $depend (sort keys %$dep) {
 		my $m = $dep->{$depend};
 		$res .= "\t\t$m $depend\n";
 	}
@@ -246,6 +248,10 @@ sub mconf_conflicts {
 
 	foreach my $depend (@$depends) {
 		next unless $package{$depend};
+		my $reverse = $package{$depend}->{conflicts};
+		# One Kconfig edge is enough for a reciprocal package conflict.
+		next if $reverse && $pkgname gt $depend &&
+			grep { $_ eq $pkgname } @$reverse;
 		$res .= "\t\tdepends on m || (PACKAGE_$depend != y)\n";
 	}
 	return $res;
@@ -585,6 +591,40 @@ sub gen_usergroup_list() {
 	}
 }
 
+sub gen_package_manifest_json() {
+	my $json;
+	parse_package_metadata($ARGV[0]) or exit 1;
+	foreach my $name (sort {uc($a) cmp uc($b)} keys %package) {
+		my %depends;
+		my $pkg = $package{$name};
+		foreach my $dep (@{$pkg->{depends} || []}) {
+			if ($dep =~ m!^\+?(?:[^:]+:)?([^@]+)$!) {
+				$depends{$1}++;
+			}
+		}
+		my @depends = sort keys %depends;
+		my $pkg_deps = join ' ', map { qq/"$_",/ } @depends;
+		$pkg_deps =~ s/\,$//;
+
+		my $pkg_maintainer = join ' ', map { qq/"$_",/ } @{$pkg->{maintainer} || []};
+		$pkg_maintainer =~ s/\,$//;
+
+		$json = <<"END_JSON";
+${json}{
+"name":"$name",
+"version":"$pkg->{version}",
+"category":"$pkg->{category}",
+"license":"$pkg->{license}",
+"maintainer": [$pkg_maintainer],
+"depends":[$pkg_deps]},
+END_JSON
+	}
+
+	$json =~ s/[\n\r]//g;
+	$json =~ s/\,$//;
+	print "[$json]";
+}
+
 sub parse_command() {
 	GetOptions("ignore=s", \@ignore);
 	my $cmd = shift @ARGV;
@@ -594,6 +634,7 @@ sub parse_command() {
 		/^kconfig/ and return gen_kconfig_overrides();
 		/^source$/ and return gen_package_source();
 		/^pkgaux$/ and return gen_package_auxiliary();
+		/^pkgmanifestjson$/ and return gen_package_manifest_json();
 		/^license$/ and return gen_package_license(0);
 		/^licensefull$/ and return gen_package_license(1);
 		/^usergroup$/ and return gen_usergroup_list();
@@ -606,6 +647,7 @@ Available Commands:
 	$0 kconfig [file] [config] [patchver]	Kernel config overrides
 	$0 source [file] 			Package source file information
 	$0 pkgaux [file]			Package auxiliary variables in makefile format
+	$0 pkgmanifestjson [file]		Package manifests in JSON format
 	$0 license [file] 			Package license information
 	$0 licensefull [file] 			Package license information (full list)
 	$0 usergroup [file]			Package usergroup allocation list
